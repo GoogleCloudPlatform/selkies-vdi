@@ -1,0 +1,94 @@
+# Copyright 2019 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+timeout: 10800s
+substitutions:
+  _NAME: broker
+  _CLUSTER_NAME: gpu-build
+  _ZONE: us-west1-a
+  _TERRAFORM_VERSION: 0.12.20
+  _TERRAFORM_VERSION_SHA256SUM: 46bd906f8cb9bbb871905ecb23ae7344af8017d214d735fbb6d6c8e0feb20ff3
+steps:
+  ###
+  # Build terraform to create cluster
+  ###
+- name: 'gcr.io/cloud-builders/wget'
+  args: ["https://releases.hashicorp.com/terraform/${_TERRAFORM_VERSION}/terraform_${_TERRAFORM_VERSION}_linux_amd64.zip"]
+- name: "gcr.io/kaniko-project/executor:v0.19.0"
+  id: "build-terraform-image"
+  args:
+  - --destination=gcr.io/${PROJECT_ID}/${_CLUSTER_NAME}-terraform:${_TERRAFORM_VERSION}
+  - --cache=true
+  - --cache-ttl=24h
+  - --build-arg=TERRAFORM_VERSION=${_TERRAFORM_VERSION}
+  - --build-arg=TERRAFORM_VERSION_SHA256SUM=${_TERRAFORM_VERSION_SHA256SUM}
+  waitFor: ["-"]
+###
+# Apply terraform to create cluster
+###
+- name: "gcr.io/${PROJECT_ID}/${_CLUSTER_NAME}-terraform:${_TERRAFORM_VERSION}"
+  id: "terraform-init"
+  args: 
+  - init
+  - -backend-config=bucket=${PROJECT_ID}-${_NAME}-tf-state
+  - -backend-config=prefix=${_CLUSTER_NAME}
+  dir: "cluster"
+  env:
+    - TF_VAR_project_id=${PROJECT_ID}
+    - TF_VAR_name=${_CLUSTER_NAME}
+    - TF_VAR_zone=${_ZONE}
+- name: "gcr.io/${PROJECT_ID}/${_CLUSTER_NAME}-terraform:${_TERRAFORM_VERSION}"
+  id: "terraform-apply"
+  dir: "cluster"
+  args: 
+  - apply
+  - -auto-approve
+  env:
+    - TF_VAR_project_id=${PROJECT_ID}
+    - TF_VAR_name=${_CLUSTER_NAME}
+    - TF_VAR_zone=${_ZONE}
+###
+# Run the job
+###
+- name: "gcr.io/cloud-builders/kubectl"
+  id: deploy-manifests
+  dir: manifests
+  args: [ "apply" , "-f", "./" ]
+  env:
+    - "PROJECT_ID=${PROJECT_ID}"
+    - "CLOUDSDK_CORE_PROJECT=${PROJECT_ID}"
+    - "CLOUDSDK_COMPUTE_ZONE=${_ZONE}"
+    - "CLOUDSDK_CONTAINER_CLUSTER=${_CLUSTER_NAME}-${_ZONE}"
+- name: "gcr.io/cloud-builders/kubectl"
+  id: wait-for-job-completion
+  dir: manifests
+  args: [ "wait" , "job/nvidia-driver-builder", "--for=condition=complete", "--timeout=1200s" ]
+  env:
+    - "PROJECT_ID=${PROJECT_ID}"
+    - "CLOUDSDK_CORE_PROJECT=${PROJECT_ID}"
+    - "CLOUDSDK_COMPUTE_ZONE=${_ZONE}"
+    - "CLOUDSDK_CONTAINER_CLUSTER=${_CLUSTER_NAME}-${_ZONE}"
+###
+# Destroy cluster
+###
+- name: "gcr.io/${PROJECT_ID}/${_CLUSTER_NAME}-terraform:${_TERRAFORM_VERSION}"
+  id: "terraform-destroy"
+  dir: "cluster"
+  args: 
+  - destroy
+  - -auto-approve
+  env:
+    - TF_VAR_project_id=${PROJECT_ID}
+    - TF_VAR_name=${_CLUSTER_NAME}
+    - TF_VAR_zone=${_ZONE}

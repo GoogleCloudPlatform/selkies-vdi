@@ -1,0 +1,230 @@
+# Copyright 2019 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# The Dockerfile and other source for this daemonset are in
+# https://github.com/GoogleCloudPlatform/cos-gpu-installer
+#
+# This is the same as ../../daemonset.yaml except that it assumes that the
+# docker image is present on the node instead of downloading from GCR. This
+# allows easier upgrades because GKE can preload the correct image on the
+# node and the daemonset can just use that image.
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nvidia-driver-builder
+  namespace: default
+  labels:
+    k8s-app: nvidia-driver-builder
+spec:
+  template:
+    metadata:
+      labels:
+        name: nvidia-driver-builder
+        k8s-app: nvidia-driver-builder
+    spec:
+      # Service account with permissions to modify node when finished.
+      serviceAccountName: gpu-node-init
+      # [START gpu_driver_scheduling]
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: cloud.google.com/gke-accelerator
+                operator: Exists
+              - key: cloud.google.com/gke-os-distribution
+                operator: In
+                values: ["cos"]
+      tolerations:
+      - key: "nvidia.com/gpu"
+        effect: "NoSchedule"
+        operator: "Exists"
+      # [END gpu_driver_scheduling]
+      hostNetwork: true
+      hostPID: true
+      volumes:
+      - name: dev
+        hostPath:
+          path: /dev
+      - name: nvidia-install-dir-host
+        hostPath:
+          path: /home/kubernetes/bin/nvidia
+      - name: root-mount
+        hostPath:
+          path: /
+      - name: config
+        configMap:
+          name: gpu-driver-cos
+          defaultMode: 0755
+      - name: host-kubectl
+        hostPath:
+          path: /home/kubernetes/bin/kubectl
+          type: File
+      restartPolicy: OnFailure
+      initContainers:
+      ###
+      # Attempt to download cached nvidia driver from GCS
+      ###
+      - image: "cos-nvidia-installer:fixed"
+        imagePullPolicy: Never
+        name: nvidia-driver-cache-download
+        resources:
+          requests:
+            cpu: 0.15
+        securityContext:
+          privileged: true
+        command: ["/bin/bash"]
+        args:
+          - -xc
+          - |
+            . /hostfs/etc/os-release
+            PROJECT_ID=$(curl -sf -H "Metadata-Flavor: Google"  http://metadata.google.internal/computeMetadata/v1/project/project-id)
+            TOKEN=$(curl -sf -H "Metadata-Flavor: Google"  http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token | tr ',' '\n' | grep access_token | cut -d: -f2 | tr -d '"')
+            URL="https://storage.googleapis.com/${PROJECT_ID}-vdi/drivers/NVIDIA-driver-cached-cos-${VERSION_ID}-${BUILD_ID}.tar.gz"
+            (cd /usr/local/ && curl -sfL -H "Authorization: Bearer $TOKEN" $URL | tar -zxvf -) || \
+              echo "WARN: Cache driver not found, driver will be built from source and cached afterwards."
+        volumeMounts:
+          - name: root-mount
+            mountPath: /hostfs
+          - name: nvidia-install-dir-host
+            mountPath: /usr/local/nvidia
+      ###
+      # Install NVIDIA driver from cache or build from source
+      ###
+      - image: "cos-nvidia-installer:fixed"
+        imagePullPolicy: Never
+        name: nvidia-driver-installer
+        resources:
+          requests:
+            cpu: 0.15
+        securityContext:
+          privileged: true
+        env:
+          - name: NVIDIA_INSTALL_DIR_HOST
+            value: /home/kubernetes/bin/nvidia
+          - name: NVIDIA_INSTALL_DIR_CONTAINER
+            value: /usr/local/nvidia
+          - name: ROOT_MOUNT_DIR
+            value: /root
+        volumeMounts:
+          - name: nvidia-install-dir-host
+            mountPath: /usr/local/nvidia
+          - name: dev
+            mountPath: /dev
+          - name: root-mount
+            mountPath: /root
+          - name: config
+            mountPath: /gpu_installer_url_lib.sh
+            subPath: gpu_installer_url_lib.sh
+          - name: config
+            mountPath: /entrypoint.sh
+            subPath: entrypoint.sh
+      ###
+      # Install CUDA runtime
+      # Skips install if libraries are found in cache.
+      # Required for GStreamer cuda elements
+      ###
+      - name: cuda-nvrtc-install
+        image: "cos-nvidia-installer:fixed"
+        imagePullPolicy: Never
+        securityContext:
+          privileged: true
+        volumeMounts:
+          - name: root-mount
+            mountPath: /usr/local/nvidia
+            subPath: home/kubernetes/bin/nvidia
+        command: ["/bin/bash"]
+        args:
+          - -exc
+          - |
+            # Install CUDA libraries
+            # NOTE the cuda package version must match the cuda driver version from the nvidia-smi output.
+            CUDA_LIB_DIR=/usr/local/nvidia/cuda/lib64
+            [[ -d ${CUDA_LIB_DIR} ]] && echo "INFO: CUDA libs already installed." && exit 0
+
+            apt-get update
+            apt-get install -y gnupg
+            apt-key adv --fetch-keys http://developer.download.nvidia.com/compute/cuda/repos/ubuntu1404/x86_64/7fa2af80.pub
+            curl -LO http://developer.download.nvidia.com/compute/cuda/repos/ubuntu1404/x86_64/cuda-repo-ubuntu1404_10.1.243-1_amd64.deb
+            dpkg -i cuda-repo-ubuntu1404_10.1.243-1_amd64.deb
+            apt-get update
+            apt-get install -y cuda-nvrtc-dev-10-1
+
+            mkdir -p ${CUDA_LIB_DIR}
+
+            rsync -ra /usr/local/cuda-10.1/lib64/* ${CUDA_LIB_DIR}
+
+            touch /tmp/cuda_install_complete
+      ###
+      # Remove taint and update node label.
+      ###
+      - name: node-init
+        image: "cos-nvidia-installer:fixed"
+        imagePullPolicy: Never
+        command: ["/bin/bash"]
+        args:
+          - -exc
+          - |
+            # remove taint
+            kubectl taint node "${MY_NODE_NAME}" cloud.google.com/gke-accelerator-init:NoSchedule- || true
+
+            # update node label
+            kubectl label node "${MY_NODE_NAME}" --overwrite cloud.google.com/gke-accelerator-initialized=true
+        env:
+          - name: MY_NODE_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: spec.nodeName
+        volumeMounts:
+          - name: host-kubectl
+            mountPath: /usr/local/bin/kubectl
+      ###
+      # Upload cached driver to GCS
+      ###
+      - name: nvidia-driver-cache-upload
+        image: google/cloud-sdk:alpine
+        command: ["/bin/bash"]
+        args:
+          - -exc
+          - |
+            . /hostfs/etc/os-release
+            PROJECT_ID=$(curl -sf -H "Metadata-Flavor: Google"  http://metadata.google.internal/computeMetadata/v1/project/project-id)
+            BUCKET=gs://${PROJECT_ID}-vdi
+            DEST_FILE=NVIDIA-driver-cached-cos-${VERSION_ID}-${BUILD_ID}.tar.gz
+            DEST_OBJ=${BUCKET}/drivers/${DEST_FILE}
+
+            # Exit if object already exists.
+            if [[ -n $(gsutil ls ${DEST_OBJ}) ]]; then
+              echo "INFO: cache archive already exists."
+              exit 0
+            fi
+
+            # Create bucket (ignore failure if bucket exists)
+            gsutil mb ${BUCKET} || true
+
+            # Create archive of driver contents
+            cd /hostfs/home/kubernetes/bin
+            tar -zcvf /tmp/${DEST_FILE} nvidia
+
+            # Copy archive to GCS
+            gsutil -m cp /tmp/${DEST_FILE} ${DEST_OBJ} || true
+        volumeMounts:
+        - name: root-mount
+          mountPath: /hostfs
+      containers:
+      - name: done
+        image: google/cloud-sdk:alpine
+        command: ["/bin/true"]
+
