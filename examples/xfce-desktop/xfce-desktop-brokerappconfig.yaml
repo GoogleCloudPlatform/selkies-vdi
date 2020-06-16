@@ -91,6 +91,8 @@ spec:
     #  default: "in"
     #- name: egressProxyCIDR # CIDR range for egress proxy network policy.
     #  default: "${EGRESS_PROXY}/32"
+    #- name: xpraUploadsMountPath
+    #  default: "/mnt/uploads"
   #appEnv:
   # proxy env, use with appParams.egressProxyCIDR
   #- name: http_proxy
@@ -105,6 +107,8 @@ spec:
   #  value: "on"
   #- name: XPRA_OPEN_FILES
   #  value: "on"
+  #- name: XPRA_HTML5_DEFAULT_SETTINGS
+  #  value: "floating_menu = true\\nvideo = false\\nsound = false\\nencoding = jpeg"
   defaultTier: gpu
   nodeTiers:
     - name: gpu
