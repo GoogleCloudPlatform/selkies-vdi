@@ -55,7 +55,7 @@ xpra ${XPRA_START:-"start"} ${DISPLAY} \
     --html=on \
     --daemon=no \
     --no-pulseaudio \
-    --clipboard=yes \
+    --clipboard=${XPRA_ENABLE_CLIPBOARD:-"yes"} \
     --clipboard-direction=${XPRA_CLIPBOARD_DIRECTION:-"both"} \
     --file-transfer=${XPRA_FILE_TRANSFER:-"on"} \
     --open-files=${XPRA_OPEN_FILES:-"on"} \
