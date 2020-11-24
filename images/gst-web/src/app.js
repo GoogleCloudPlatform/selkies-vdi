@@ -55,6 +55,7 @@ var app = new Vue({
                 { text: '15 fps', value: 15 },
                 { text: '30 fps', value: 30 },
                 { text: '60 fps', value: 60 },
+                { text: '100 fps', value: 100 },
             ],
             audioBitRate: (parseInt(window.localStorage.getItem("audioBitRate")) || 32000),
             audioBitRateOptions: [
@@ -74,6 +75,7 @@ var app = new Vue({
             gamepadState: 'disconnected',
             gamepadName: 'none',
             audioEnabled: null,
+            windowResolution: "",
             connectionStatType: "unknown",
             connectionLatency: 0,
             connectionVideoLatency: 0,
@@ -363,6 +365,11 @@ webrtc.input.onfullscreenhotkey = () => {
     app.enterFullscreen();
 }
 
+webrtc.input.onresizeend = () => {
+    app.windowResolution = webrtc.input.getWindowResolution();
+    console.log(`Window size changed: ${app.windowResolution[0]}x${app.windowResolution[1]}`);
+}
+
 webrtc.onplayvideorequired = () => {
     app.showStart = true;
 }
@@ -456,7 +463,10 @@ fetch("/turn/")
         // for debugging, force use of relay server.
         webrtc.forceTurn = app.turnSwitch;
 
-        app.debugEntries.push(applyTimestamp("[app] using TURN server: " + config.iceServers[1].urls[0]));
+        // get initial local resolution
+        app.windowResolution = webrtc.input.getWindowResolution();
+
+        app.debugEntries.push(applyTimestamp("[app] using TURN servers: " + config.iceServers[1].urls.join(", ")));
         webrtc.rtcPeerConfig = config;
         webrtc.connect();
     });

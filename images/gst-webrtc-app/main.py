@@ -63,25 +63,28 @@ def fetch_coturn(uri, user, auth_header_name):
     stun_host = stun.split(":")[1]
     stun_port = stun.split(":")[2].split("?")[0]
 
-    turn = ice_servers[1]['urls'][0]
-    turn_host = turn.split(':')[1]
-    turn_port = turn.split(':')[2].split('?')[0]
-    turn_user = ice_servers[1]['username']
-    turn_password = ice_servers[1]['credential']
-
     stun_uri = "stun://%s:%s" % (
         stun_host,
         stun_port
     )
 
-    turn_uri = "turn://%s:%s@%s:%s" % (
-        urllib.parse.quote(turn_user, safe=""),
-        urllib.parse.quote(turn_password, safe=""),
-        turn_host,
-        turn_port
-    )
+    turn_uris = []
+    for turn in ice_servers[1]['urls']:
+        turn_host = turn.split(':')[1]
+        turn_port = turn.split(':')[2].split('?')[0]
+        turn_user = ice_servers[1]['username']
+        turn_password = ice_servers[1]['credential']
 
-    return stun_uri, turn_uri
+        turn_uri = "turn://%s:%s@%s:%s" % (
+            urllib.parse.quote(turn_user, safe=""),
+            urllib.parse.quote(turn_password, safe=""),
+            turn_host,
+            turn_port
+        )
+
+        turn_uris.append(turn_uri)
+
+    return stun_uri, turn_uris
 
 def wait_for_app_ready(ready_file, app_auto_init = True):
     """Wait for streaming app ready signal.
@@ -164,6 +167,9 @@ if __name__ == '__main__':
     parser.add_argument('--framerate',
                         default=os.environ.get('WEBRTC_FRAMERATE', '30'),
                         help='framerate of streaming pipeline')
+    parser.add_argument('--encoder',
+                        default=os.environ.get('WEBRTC_ENCODER', 'nvh264enc'),
+                        help='gstreamer encoder plugin to use')
     parser.add_argument('--metrics_port',
                         default=os.environ.get('METRICS_PORT', '8000'),
                         help='port to start metrics server on')
@@ -181,6 +187,8 @@ if __name__ == '__main__':
                     args.framerate = int(v)
                 if k == "enable_audio":
                     args.enable_audio = str((str(v).lower() == 'true')).lower()
+                if k == "encoder":
+                    args.ecoder = v.lower()
         except Exception as e:
             logging.error("failed to load json config from %s: %s" % (args.json_config, str(e)))
 
@@ -218,13 +226,13 @@ if __name__ == '__main__':
     # After connecting, attempt to setup call to peer.
     signalling.on_connect = signalling.setup_call
 
-    # [BEGIN main_setup]
+    # [START main_setup]
     # Fetch the turn server and credentials
-    stun_server, turn_server = fetch_coturn(
+    stun_server, turn_servers = fetch_coturn(
         args.coturn_web_uri, args.coturn_web_username, args.coturn_auth_header_name)
 
     # Create instance of app
-    app = GSTWebRTCApp(stun_server, turn_server, args.enable_audio == "true", int(args.framerate))
+    app = GSTWebRTCApp(stun_server, turn_servers, args.enable_audio == "true", int(args.framerate), args.encoder)
 
     # [END main_setup]
 
@@ -287,7 +295,7 @@ if __name__ == '__main__':
     webrtc_input.on_client_latency = lambda latency_ms: metrics.set_latency(latency_ms)
 
     # Initialize GPU monitor
-    gpu_mon = GPUMonitor()
+    gpu_mon = GPUMonitor(enabled=args.encoder.startswith("nv"))
 
     # Send the GPU stats when available.
     def on_gpu_stats(load, memory_total, memory_used):
@@ -296,6 +304,7 @@ if __name__ == '__main__':
 
     gpu_mon.on_stats = on_gpu_stats
 
+    # [START main_start]
     # Connect to the signalling server and process messages.
     loop = asyncio.get_event_loop()
     try:
@@ -313,3 +322,4 @@ if __name__ == '__main__':
         webrtc_input.disconnect()
         gpu_mon.stop()
         sys.exit(0)
+    # [END main_start]

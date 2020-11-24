@@ -1,4 +1,4 @@
-#!/bin/bash -ex
+#!/bin/bash -e
 
 # Copyright 2019 Google LLC
 #
@@ -15,7 +15,6 @@
 # limitations under the License.
 
 if [[ "${XPRA_ARGS}" =~ use-display=yes ]]; then
-    set +x
     echo "Waiting for host X server at ${DISPLAY}"
     until [[ -e /var/run/appconfig/xserver_ready ]]; do sleep 1; done
     echo "Host X server is ready"
@@ -37,32 +36,66 @@ if [[ -n "${XPRA_CONF}" ]]; then
   echo "${XPRA_CONF}" | sudo tee /etc/xpra/conf.d/99_appconfig.conf
 fi
 
-echo "Starting xpra"
-xpra ${XPRA_START:-"start"} ${DISPLAY} \
+# Start dbus
+sudo rm -rf /var/run/dbus
+dbus-uuidgen | sudo tee /var/lib/dbus/machine-id
+sudo mkdir -p /var/run/dbus
+sudo dbus-daemon --system
+
+echo "Starting CUPS"
+sudo cupsd
+sudo sed -i 's/^add-printer-options = -u .*/add-printer-options = -u allow:all/g' /etc/xpra/conf.d/16_printing.conf
+until lpinfo -v | grep -q xpraforwarder; do sleep 1; done
+echo "CUPS is ready"
+
+echo "Starting Xpra"
+sudo mkdir -p /var/log/xpra
+sudo chmod 777 /var/log/xpra
+(xpra ${XPRA_START:-"start"} ${DISPLAY} \
     --resize-display=no \
     --user=app \
     --bind-tcp=0.0.0.0:${XPRA_PORT:-8082} \
     --html=on \
     --daemon=no \
     --no-pulseaudio \
-    --clipboard=yes \
+    --clipboard=${XPRA_ENABLE_CLIPBOARD:-"yes"} \
     --clipboard-direction=${XPRA_CLIPBOARD_DIRECTION:-"both"} \
     --file-transfer=${XPRA_FILE_TRANSFER:-"on"} \
     --open-files=${XPRA_OPEN_FILES:-"on"} \
-    ${XPRA_ARGS} &
+    ${XPRA_ARGS} 2>&1 | tee /var/log/xpra/xpra.log) &
 PID=$!
 
+function watchLogs() {
+  tail -n+1 -F /var/log/xpra/xpra.log | while read line; do
+    ts=$(date)
+    #echo "$line"
+    if [[ "${line}" =~ "startup complete" ]]; then
+      echo "INFO: Saw Xpra startup complete: ${line}"
+      echo "$ts" > /var/run/appconfig/.xpra-startup-complete
+    fi
+    if [[ "${line}" =~ "connection-established" ]]; then
+      echo "INFO: Saw Xpra client connected: ${line}"
+      echo "$ts" > /var/run/appconfig/.xpra-client-connected
+    fi
+    if [[ "${line}" =~ "client display size is" ]]; then
+      echo "INFO: Saw Xpra client display size change: ${line}"
+      echo ${line/*client display size is /} | cut -d' ' -f1 > /var/run/appconfig/xpra_display_size
+    fi
+    if [[ "${line}" =~ "client root window size is" ]]; then
+      echo "INFO: Saw Xpra client display size change: ${line}"
+      echo ${line/*client root window size is /} | cut -d' ' -f1 > /var/run/appconfig/xpra_display_size
+    fi
+  done
+}
+
+# Watch the xpra logs for key events and client resolution changes
+watchLogs &
+
 # Wait for Xpra client
-set +x
 echo "Waiting for Xpra client"
-until xpra info $XPRA 2>&1 >/dev/null; do sleep 1; done
-clients=0
-while [[ $clients -lt 1 ]]; do
-    clients=$(xpra info $XPRA | grep clients= | cut -d'=' -f2)
-    sleep 1
-done
+until [[ -f /var/run/appconfig/.xpra-startup-complete ]]; do sleep 1; done
+until [[ -f /var/run/appconfig/.xpra-client-connected ]]; do sleep 1; done
 echo "Xpra is ready"
-set -x
 
 xhost +
 touch /var/run/appconfig/xserver_ready

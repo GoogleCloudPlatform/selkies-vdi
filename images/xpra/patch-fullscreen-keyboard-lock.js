@@ -31,7 +31,8 @@ window.toggle_fullscreen = function () {
                 "Escape",
                 "ContextMenu",
                 "MetaLeft",
-                "MetaRight"
+                "MetaRight",
+                "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11",
             ];
             navigator.keyboard.lock(keys).then(
                 () => {
@@ -60,14 +61,38 @@ window.toggle_fullscreen = function () {
     }
 }
 
-// If floating menu is hidden, the fullscreen button is not visible, add hotkey CTRL+SHIFT+F to enter fullscreen mode.
+window.inAltTab = false;
+window.altTabSelIndex = 0;
+// If floating menu is hidden, the fullscreen button is not visible, add hotkey ctrl+alt+shift+f to enter fullscreen mode.
 window.addEventListener('keydown', (event) => {
     // capture fullscreen hotkey
-    if (event.type === 'keydown' && event.code === 'KeyF' && event.ctrlKey && event.shiftKey) {
+    if (event.type === 'keydown' && event.code === 'KeyF' && event.ctrlKey && event.shiftKey && event.altKey) {
         if (document.fullscreenElement === null && this.onfullscreenhotkey !== null) {
             window.toggle_fullscreen();
         }
         return;
     }
+
+    if (event.type === 'keydown' && event.altKey && event.code === 'Tab') {
+        console.log("alt-tab pressed.");
+        window.inAltTab = true;
+
+        $('.Menu a[data-icon="filter"]').parent()[0].showMenu();
+
+        var window_ids = Object.keys(client.id_to_window);
+        window.altTabSelIndex = (window.altTabSelIndex + 1) % window_ids.length;
+        console.log(`alt-tab window ${window.altTabSelIndex + 1}/${window_ids.length}`);
+
+        client._window_set_focus(client.id_to_window[window_ids[window.altTabSelIndex]]);
+    }
 });
 
+window.addEventListener('keyup', (event) => {
+    if (event.type === 'keyup' && event.code === 'AltLeft' && window.inAltTab) {
+        console.log("alt-tab released.");
+
+        window.inAltTab = false;
+
+        $('.Menu a[data-icon="filter"]').parent()[0].hideMenu();
+    }
+});

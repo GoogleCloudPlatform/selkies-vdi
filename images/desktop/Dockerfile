@@ -14,9 +14,10 @@
 
 # Download Jetbrains Toolbox and extract appimage
 FROM ubuntu:16.04 as jetbrains
+RUN apt-get update && apt-get install -y -qq curl
 WORKDIR /tmp
-ADD https://data.services.jetbrains.com/products/download?platform=linux&code=TBA ./jetbrains-toolbox.tar.gz
-RUN tar --strip-components=1 -zxvf jetbrains-toolbox.tar.gz
+RUN curl -sfL 'https://data.services.jetbrains.com/products/download?platform=linux&code=TBA' | \
+    tar --strip-components=1 -zxvf -
 
 # Extract the AppImage, output will be in /tmp/appimage
 RUN chmod +x jetbrains-toolbox && \
@@ -89,6 +90,12 @@ RUN \
 WORKDIR /usr/share/cloudshell
 COPY config/* ./
 
+# Copy default DPI script
+RUN \
+    sudo mkdir -p /etc/skel/Autostart && \
+    sudo ln -s /usr/share/cloudshell/set-default-dpi.desktop /etc/skel/Autostart/set-default-dpi.desktop
+
+# Copy jetbrains-toolbox helper script to path.
 RUN \
     cp /usr/share/cloudshell/jetbrains-toolbox /usr/bin/jetbrains-toolbox && \
     chmod +x /usr/bin/jetbrains-toolbox
@@ -108,7 +115,9 @@ COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 # Add user and grant sudo
-RUN adduser --gecos '' --disabled-password --shell /bin/bash app && \
+RUN sed -i 's/:1000:/:2000:/g' /etc/{group,passwd} && \
+    groupadd --gid 1000 app && \
+    adduser --uid=1000 --gid=1000 --gecos '' --disabled-password --shell /bin/bash app && \
 	echo "app ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers.d/nopasswd
 
 WORKDIR /home/app/project
