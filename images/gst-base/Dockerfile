@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM ubuntu:19.10
+FROM ubuntu:20.04
 
 # Use GCE apt servers
 ARG GCE_REGION=us-west1
@@ -30,12 +30,15 @@ RUN \
 
 WORKDIR /opt
 
-ARG GSTREAMER_VERSION=1.18.0
-ARG GST_PLUGINS_BASE_VERSION=1.18.0
-ARG GST_PLUGINS_GOOD_VERSION=1.18.0
-ARG GST_PLUGINS_BAD_VERSION=1.18.0
-ARG GST_PLUGINS_UGLY_VERSION=1.18.0
-ARG GST_PYTHON_VERSION=1.18.0
+# Checkout hashed commits with CUDA buffer support.
+# This can be removed once MR 1633 is on a release tag:
+#   https://gitlab.freedesktop.org/gstreamer/gst-plugins-bad/merge_requests/1633
+ARG GSTREAMER_VERSION=b71841c2d2f3759abc5ebe2703cc96c18da77dc9
+ARG GST_PLUGINS_BASE_VERSION=f5d971a19ea74f6dd624dcb66992bf955731e8c7
+ARG GST_PLUGINS_GOOD_VERSION=79efd372c12ae9117f3863d756296a22a4010c0f
+ARG GST_PLUGINS_BAD_VERSION=98eebf332287a6e26a0d7e0d56a094b7861d5cdf
+ARG GST_PLUGINS_UGLY_VERSION=a9105ad1e1fb8cbcf787c2a967697707eea405ed
+ARG GST_PYTHON_VERSION=7a0decbec242b026391ff6504f0619259aa34721
 
 # cloner repo for each gstreamer module
 RUN git clone https://gitlab.freedesktop.org/gstreamer/gstreamer.git && cd gstreamer && git checkout ${GSTREAMER_VERSION}
@@ -112,7 +115,7 @@ RUN \
         libsrtp2-dev
 
 # Install usrsctp from source
-ARG USRSCTP_VERSION=6ce0f8fe7455e566a6833684ec5983547658856d
+ARG USRSCTP_VERSION=a948078b4e7078aed527a3dd6a52e95f9afdf187
 RUN \
     git clone https://github.com/sctplab/usrsctp.git && \
     cd usrsctp && git checkout ${USRSCTP_VERSION} && \
@@ -120,26 +123,14 @@ RUN \
         make && make install && make clean
 
 # Install libnice from source
-ARG LIBNICE_VERSION=d6087ae5e0c1de2555f64d792c144d49bd816920
+ARG LIBNICE_VERSION=2b38ba23b726694293de53c90b59b28ca11746ab
 RUN \
     git clone https://gitlab.freedesktop.org/libnice/libnice.git && \
     cd libnice && git checkout ${LIBNICE_VERSION} && \
     meson build --prefix=/usr && \
     ninja -C build install
 
-# Checkout experimental CUDA convert branch.
-# This can be removed once MR 526 is merged:
-#   https://gitlab.freedesktop.org/gstreamer/gst-plugins-bad/merge_requests/526
-RUN \
-    cd /opt/gst-plugins-bad && \
-    git fetch https://gitlab.freedesktop.org/danisla/gst-plugins-bad.git gst-cuda-filter-1.18 && \
-    git checkout -b gst-cuda-filter FETCH_HEAD
-
 # Install gst-plugins-bad from source
-# Note that the branch being used contains the nvcodec refactor
-# that loads the nvidia libraries at runtime, so no existing 
-# libs need to be present when building the plugin. 
-# This is the case for gstreamer 1.17+.
 RUN \
     cd /opt/gst-plugins-bad && \
     meson build --prefix=/usr && \

@@ -19,7 +19,7 @@
   {{- end}}
 {{- end}}
 
-{{- if $enableFileManager}}
+{{- if and ($enableFileManager) (eq .AppSpec.Type "statefulset") }}
 ###
 # Add proxy http port to service
 ###
@@ -32,6 +32,6 @@
 {{- else}}
 # Cannot have empty patch, so this is effectively a no-op.
 - op: test
-  path: /spec/selector/app
-  value: {{.ServiceName}}
+  path: /kind
+  value: Service
 {{- end}}

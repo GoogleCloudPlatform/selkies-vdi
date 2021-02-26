@@ -25,15 +25,17 @@
   {{- end}}
 {{- end}}
 
-{{- $subPath := default "" .AppParams.persistStorageSubPath }}
+{{- $subPath := default "" .AppParams.persistStorageSubPath | quote }}
 {{- if eq $subPath "USER" }}
   {{- $subPath = .User }}
 {{- end}}
 
-{{- $storageClass := default "standard" .AppParams.persistStorageClass }}
+{{- $storageClass := default "pd-balanced" .AppParams.persistStorageClass }}
 {{- if eq $storageClass "NONE" }}
   {{- $storageClass = "" }}
 {{- end }}
+
+{{- $mountPath := default "/home/app" .AppParams.persistStorageMountPath }}
 
 {{- if $enablePersistence }}
 ###
@@ -46,6 +48,8 @@
       name: persist
       annotations:
         gke.accel.vdi/user: "{{.User}}"
+      labels:
+        app.broker/deletion-policy: "abandon"
     spec:
       accessModes: [ "{{ default "ReadWriteOnce" .AppParams.persistVolumeMode }}" ]
       storageClassName: {{ $storageClass | quote }}
@@ -67,12 +71,14 @@
     args:
       - -xc
       - |
-        mkdir -p /mnt/persist/${SUBPATH}
-        /bin/chown 1000:1000 /mnt/persist/${SUBPATH}
+        mkdir -p /mnt/persist/${SUBPATH}/project
         grep -q DOCKER_HOST /mnt/persist/${SUBPATH}/.bashrc || (echo DOCKER_HOST=tcp://127.0.0.1:2376 >> /mnt/persist/${SUBPATH}/.bashrc)
+        /bin/chown 1000:1000 /mnt/persist/${SUBPATH}
+        /bin/chown 1000:1000 /mnt/persist/${SUBPATH}/.bashrc
+        /bin/chown 1000:1000 /mnt/persist/${SUBPATH}/project
     env:
       - name: SUBPATH
-        value: "{{ $subPath }}"
+        value: {{ $subPath }}
     volumeMounts:
       - name: persist
         mountPath: /mnt/persist
@@ -84,11 +90,16 @@
   path: "/spec/template/spec/containers/0/volumeMounts/-"
   value:
     name: persist
-    mountPath: /home/app
+    mountPath: {{ $mountPath }}
     subPath: {{ $subPath }}
 {{- else}}
-# Cannot have empty patch, so this is effectively a no-op.
-- op: test
-  path: /spec/template/spec/containers/0/name
-  value: desktop
+###
+# Add empty volume for home directory
+###
+- op: add
+  path: "/spec/template/spec/volumes/-"
+  value:
+    name: persist
+    emptyDir:
+      sizeLimit: 1Gi
 {{- end}}

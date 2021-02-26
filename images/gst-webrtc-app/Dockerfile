@@ -27,11 +27,12 @@ RUN \
         x11-utils \
         xdotool \
         wmctrl \
+        jq \
         x11-xserver-utils
 
 # Build app
 WORKDIR /opt/app
-COPY *.py watchdog.sh debug.sh /opt/app/
+COPY *.py debug.sh /opt/app/
 
 ENV PATH=/usr/local/nvidia/bin:${PATH}
 

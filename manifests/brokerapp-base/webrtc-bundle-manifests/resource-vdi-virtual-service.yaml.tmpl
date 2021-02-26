@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+{{- if eq .AppSpec.Type "statefulset" }}
 # [START pod_broker_virtual_service]
 apiVersion: networking.istio.io/v1alpha3
 kind: VirtualService
@@ -64,3 +65,4 @@ spec:
             port:
               number: 80
 # [END pod_broker_virtual_service]
+{{- end}}

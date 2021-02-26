@@ -12,44 +12,65 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+{{- if eq .AppSpec.Type "deployment" }}
+###
+# TODO: figure out how to remove this service.
+# It's not needed with the deployment type brokerapp but is needed for templating patches.
+###
 apiVersion: v1
 kind: Service
 metadata:
-  name: vdi
+  name: {{.App}}
 spec:
-  selector:
-    app: vdi
-  ports:
-    # Port 80 is the default port routed by the pod broker.
-    - port: 80
-      name: web
-      targetPort: 8082
-    - port: 8080
-      name: signalling
-      targetPort: 8080
-    - port: 8081
-      name: xpra
-      targetPort: 8081
+  clusterIP: None
 ---
 apiVersion: apps/v1
-kind: StatefulSet
+kind: Deployment
 metadata:
-  name: vdi
+  name: {{.App}}
 spec:
   selector:
     matchLabels:
-      app: vdi
-  serviceName: vdi
-  replicas: 1
-  volumeClaimTemplates: []
+      app: {{.App}}
+  replicas: {{.AppSpec.Deployment.Replicas}}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 50%
+      maxSurge: 50%
   template:
     metadata:
       annotations: {}
       labels:
-        app: vdi
+        app: {{.App}}
     spec:
+      serviceAccount: {{.Namespace}}
+
+      enableServiceLinks: false
+
       # Disable service account used for accessing the kubernetes API/
       automountServiceAccountToken: false
+
+      nodeSelector:
+        app.broker/tier: {{ .NodeTier.NodeLabel }}
+        cloud.google.com/gke-nodepool: "{{ .NodeTier.NodeLabel }}"
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - key: app.broker/initialized
+                    operator: In
+                    values: ["true"]
+      
+      tolerations:
+        - key: "app.broker/tier"
+          effect: "NoSchedule"
+          operator: "Exists"
+        - key: "app.broker/node-init"
+          effect: "NoSchedule"
+          operator: "Exists"
 
       # Terminate pod after 10 seconds of receiving SIGTERM
       terminationGracePeriodSeconds: 5
@@ -79,23 +100,35 @@ spec:
       initContainers: []
       containers:
         ###
-        # NOTE: To speed up container startup time, images are pulled locally in the gpu-node-init daemonset, hence the imagePullPolicy=Never
-        ###
-
-        ###
         # Desktop container
         ###
         - name: desktop
-          image: gcr.io/cloud-solutions-images/webrtc-gpu-streaming-desktop:latest
+          image: {{.ImageRepo}}:{{.ImageTag}}
+          # Allow entrypoint command override from app config spec.
+          {{- if .AppParams.command}}
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+{{.AppParams.command | nindent 12}}
+          {{- end}}
           securityContext:
             privileged: false
             runAsUser: 1000
             runAsGroup: 1000
           env:
+            - name: VDI_USER
+              value: "{{.App}}"
             - name: LD_LIBRARY_PATH
               value: "/usr/local/nvidia/lib64:/usr/local/nvidia/lib32"
             - name: PULSE_SERVER
               value: "127.0.0.1:4713"
+            
+            # Add environment vars from brokerappconfig spec.
+            {{- range $item := .AppSpec.AppEnv }}
+            - name: {{$item.Name}}
+              value: {{ quote $item.Value }}
+            {{- end}}
+
           volumeMounts:
             # Shared pod mount at host for intra-container and cross-pod sharing.
             - name: x11
@@ -114,16 +147,7 @@ spec:
         # Watchdog container
         ###
         - name: watchdog
-          image: gcr.io/cloud-solutions-images/webrtc-gpu-streaming-gst-webrtc-app:latest
-          imagePullPolicy: IfNotPresent
-          command: ["/bin/bash"]
-          args:
-            - -ec
-            - |
-              echo "Waiting for host X server at ${DISPLAY}"
-              until [[ -e /var/run/appconfig/xserver_ready ]]; do sleep 1; done
-              echo "Host X server is ready"
-              exec /usr/bin/python3 /opt/app/xserver_watchdog.py --on_timeout=/opt/app/watchdog.sh
+          image: {{printf "gcr.io/%s/webrtc-gpu-streaming-watchdog:latest" .ProjectID}}
           env: []
           volumeMounts:
             - name: x11
@@ -150,7 +174,18 @@ spec:
           imagePullPolicy: IfNotPresent
           securityContext:
             privileged: false
-          env: []
+          env:
+          - name: VDI_USER
+            value: "{{.App}}"
+          
+          # Add environment vars from brokerappconfig spec.
+          {{- range $item := .AppSpec.AppEnv }}
+          {{- if eq "RESOLUTION" $item.Name }}
+          - name: {{ $item.Name }}
+            value: {{ quote $item.Value }}
+          {{- end}}
+          {{- end}}
+
           volumeMounts:
             - name: x11
               mountPath: /tmp/.X11-unix
@@ -189,6 +224,23 @@ spec:
               value: "x-goog-authenticated-user-email"
             - name: COTURN_WEB_URI
               value: "http://turn.pod-broker-system.svc.cluster.local/"
+            - name: APP_AUTO_INIT
+              value: "{{default "true" .AppParams.appAutoInit}}"
+            - name: ENABLE_AUDIO
+              value: "{{default "false" .AppParams.enableAudio}}"
+            {{- if .AppParams.enableClipboard }}
+            - name: ENABLE_CLIPBOARD
+              value: "{{.AppParams.enableClipboard}}"
+            {{- end}}
+
+            # Add WEBRTC_ prefixed environment vars from brokerappconfig spec.
+            {{- range $item := .AppSpec.AppEnv }}
+            {{- if hasPrefix "WEBRTC_" $item.Name }}
+            - name: {{ $item.Name }}
+              value: {{ quote $item.Value }}
+            {{- end}}
+            {{- end}}
+
           volumeMounts:
             - name: x11
               mountPath: /tmp/.X11-unix
@@ -216,15 +268,18 @@ spec:
         - name: web
           image: gcr.io/cloud-solutions-images/webrtc-gpu-streaming-gst-web:latest
           imagePullPolicy: IfNotPresent
-          command: ["/bin/sh"]
-          args:
-            - -exc
-            - |
-              sed -i \
-                  -e 's/listen.*80;/listen 8082;/g' \
-                  /etc/nginx/conf.d/default.conf
-
-              exec nginx -g 'daemon off;'
+          env:
+            - name: GST_WEB_PORT
+              value: "8082"
+            - name: PATH_PREFIX
+              value: "/"
+            # Add app context for PWA manifest
+            - name: PWA_APP_NAME
+              value: {{.AppSpec.DisplayName | quote}}
+            - name: PWA_APP_PATH
+              value: {{.App | quote}}
+            - name: PWA_ICON_URL
+              value: {{.AppSpec.Icon | quote}}
           ports:
             - name: web
               containerPort: 8082
@@ -254,3 +309,4 @@ spec:
         #      valueFrom:
         #        fieldRef:
         #          fieldPath: metadata.namespace
+{{- end}}

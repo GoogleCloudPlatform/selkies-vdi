@@ -36,6 +36,34 @@ if [[ -n "${XPRA_CONF}" ]]; then
   echo "${XPRA_CONF}" | sudo tee /etc/xpra/conf.d/99_appconfig.conf
 fi
 
+# Update PWA manifest.json with app info and route.
+sudo sed -i \
+  -e "s|XPRA_PWA_APP_NAME|${XPRA_PWA_APP_NAME:-Xpra Desktop}|g" \
+  -e "s|XPRA_PWA_APP_PATH|${XPRA_PWA_APP_PATH:-xpra-desktop}|g" \
+  '/usr/share/xpra/www/manifest.json'
+sudo sed -i \
+  -e "s|XPRA_PWA_CACHE|${XPRA_PWA_APP_PATH:-xpra-desktop}-pwa|g" \
+  '/usr/share/xpra/www/sw.js'
+
+if [[ -n "${XPRA_PWA_ICON_URL}" ]]; then
+  echo "INFO: Converting icon to PWA standard"
+  if [[ "${XPRA_PWA_ICON_URL}" =~ "data:image/png;base64" ]]; then
+    echo "${XPRA_PWA_ICON_URL}" | cut -d ',' -f2 | base64 -d > /tmp/icon.png
+  else
+    curl -o /tmp/icon.png -s -f -L "${XPRA_PWA_ICON_URL}" || true
+  fi
+  if [[ -e /tmp/icon.png ]]; then
+    echo "INFO: Creating PWA icon sizes"
+    sudo convert /tmp/icon.png /usr/share/xpra/www/icon.png || true
+    rm -f /tmp/icon.png
+    for size in 192x192 512x512; do
+      sudo convert -resize ${size} -size ${size} /usr/share/xpra/www/icon.png /usr/share/xpra/www/icon-${size}.png || true
+    done
+  else
+    echo "WARN: failed to download PWA icon, PWA features may not be available: ${XPRA_PWA_ICON_URL}"
+  fi
+fi
+
 # Start dbus
 sudo rm -rf /var/run/dbus
 dbus-uuidgen | sudo tee /var/lib/dbus/machine-id
@@ -58,10 +86,12 @@ sudo chmod 777 /var/log/xpra
     --html=on \
     --daemon=no \
     --no-pulseaudio \
+    --bell=${XPRA_ENABLE_BELL:-"no"} \
     --clipboard=${XPRA_ENABLE_CLIPBOARD:-"yes"} \
     --clipboard-direction=${XPRA_CLIPBOARD_DIRECTION:-"both"} \
     --file-transfer=${XPRA_FILE_TRANSFER:-"on"} \
     --open-files=${XPRA_OPEN_FILES:-"on"} \
+    --printing=${XPRA_ENABLE_PRINTING:-"yes"} \
     ${XPRA_ARGS} 2>&1 | tee /var/log/xpra/xpra.log) &
 PID=$!
 

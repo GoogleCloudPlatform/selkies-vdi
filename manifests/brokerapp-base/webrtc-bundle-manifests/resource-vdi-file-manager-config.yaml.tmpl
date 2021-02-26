@@ -21,11 +21,16 @@
 
 {{- $fileManagerTheme := default "light" .AppParams.fileManagerTheme }}
 
+{{- $name := printf "%s-tfm" .ServiceName }}
+{{- if eq .AppSpec.Type "deployment" }}
+  {{- $name = printf "%s-%s-tfm" .App .ServiceName }}
+{{- end}}
+
 {{- if $enableFileManager}}
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{.ServiceName}}-tfm
+  name: {{ $name }}
 data:
   config.php: |-
     <?php
